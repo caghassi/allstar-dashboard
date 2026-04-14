@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // Apply src/db/schema.sql to the Neon database pointed to by DATABASE_URL.
-// Run with: npm run db:push  (loads .env.local via --env-file)
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { neon } from "@neondatabase/serverless";
+import { Pool } from "@neondatabase/serverless";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(here, "..", "src", "db", "schema.sql");
@@ -15,26 +14,33 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const sql = neon(process.env.DATABASE_URL);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const schema = readFileSync(schemaPath, "utf8");
 
-// Neon's HTTP client requires one statement per call. Split on ';' while
-// ignoring those inside dollar-quoted blocks / comments.
+// Split on ';' at end of line. Keep SQL with inline/leading comments intact
+// (Postgres ignores them). Drop chunks that are only comments/whitespace.
 const statements = schema
-  .split(/;\s*$/m)
+  .split(/;\s*(?:\n|$)/m)
   .map((s) => s.trim())
-  .filter((s) => s.length && !s.startsWith("--"));
+  .filter(
+    (s) => s.length && s.replace(/--[^\n]*/g, "").trim().length,
+  );
 
 for (const stmt of statements) {
   try {
-    await sql.query(stmt);
-    const first = stmt.split("\n")[0].slice(0, 80);
-    console.log("ok:", first);
+    await pool.query(stmt);
+    const firstSql =
+      stmt
+        .split("\n")
+        .find((l) => l.trim().length && !l.trim().startsWith("--")) ?? stmt;
+    console.log("ok:", firstSql.slice(0, 80));
   } catch (err) {
     console.error("FAILED:", stmt.split("\n")[0]);
     console.error(err.message);
+    await pool.end();
     process.exit(1);
   }
 }
 
+await pool.end();
 console.log("\nSchema applied.");
