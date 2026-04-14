@@ -1,7 +1,5 @@
 // Syncs the last ~13 months of Printavo invoices into `printavo_orders`, then
-// rebuilds the `reorder_calls` queue: any order whose due date anniversary is
-// 21-45 days from today AND (total >= $200 OR recurring customer OR event
-// keyword in job name) gets queued for a reminder call.
+// rebuilds the `reorder_calls` queue.
 
 import { iterateInvoicesSince, type PrintavoInvoice } from "./printavo";
 import { sql } from "./db";
@@ -28,7 +26,6 @@ function toCents(total: number | null | undefined): number {
 
 function asDateOnly(iso: string | null | undefined): string | null {
   if (!iso) return null;
-  // ISO date or datetime — take first 10 chars.
   return iso.slice(0, 10);
 }
 
@@ -40,7 +37,6 @@ export type SyncSummary = {
 
 export async function runPrintavoSync(): Promise<SyncSummary> {
   const q = sql();
-  // Pull ~13 months so we always have a full year of history plus slack.
   const since = new Date();
   since.setMonth(since.getMonth() - 13);
 
@@ -50,15 +46,12 @@ export async function runPrintavoSync(): Promise<SyncSummary> {
     ordersUpserted++;
   }
 
-  // Now recompute the reorder queue.
   const today = new Date();
   const windowStart = new Date(today);
   windowStart.setDate(today.getDate() + REORDER_LEAD_DAYS_MIN);
   const windowEnd = new Date(today);
   windowEnd.setDate(today.getDate() + REORDER_LEAD_DAYS_MAX);
 
-  // Translate the "anniversary window" to last-year date ranges.
-  // An order from last year qualifies if (due_date + 1 year) is within the window.
   const lastYearWindowStart = new Date(windowStart);
   lastYearWindowStart.setFullYear(lastYearWindowStart.getFullYear() - 1);
   const lastYearWindowEnd = new Date(windowEnd);
@@ -80,7 +73,6 @@ export async function runPrintavoSync(): Promise<SyncSummary> {
     event_keyword: string | null;
   }>;
 
-  // Customer frequency map (customers with 2+ historical orders count as recurring).
   const recurringRows = (await q`
     select customer_id, count(*)::int as n
     from printavo_orders
@@ -115,7 +107,6 @@ export async function runPrintavoSync(): Promise<SyncSummary> {
     reorderCallsCreated++;
   }
 
-  // Drop stale entries (event date already in the past).
   const removed = (await q`
     delete from reorder_calls
     where projected_event_date < current_date
@@ -133,9 +124,10 @@ async function upsertInvoice(inv: PrintavoInvoice): Promise<void> {
   const q = sql();
   const jobName = inv.nickname ?? null;
   const keyword = detectEventKeyword(jobName);
-  const tags = Array.isArray(inv.tags)
-    ? inv.tags.map((t) => (typeof t === "string" ? t : t?.name)).filter(Boolean)
-    : [];
+  const tags = Array.isArray(inv.tags) ? inv.tags : [];
+  const dueDate = inv.customerDueAt ?? inv.dueAt;
+  const customerName =
+    inv.contact?.customer?.companyName ?? inv.contact?.fullName ?? null;
 
   await q`
     insert into printavo_orders (
@@ -146,12 +138,12 @@ async function upsertInvoice(inv: PrintavoInvoice): Promise<void> {
       ${inv.id},
       ${inv.visualId ?? null},
       ${jobName},
-      ${inv.customer?.id ?? null},
-      ${inv.customer?.companyName ?? null},
-      ${inv.customer?.email ?? null},
-      ${inv.customer?.phone ?? null},
+      ${inv.contact?.customer?.id ?? null},
+      ${customerName},
+      ${inv.contact?.email ?? null},
+      ${inv.contact?.phone ?? null},
       ${toCents(inv.total)},
-      ${asDateOnly(inv.dueAt)},
+      ${asDateOnly(dueDate)},
       ${asDateOnly(inv.createdAt)},
       ${inv.status?.name ?? null},
       ${JSON.stringify(tags)}::jsonb,
