@@ -134,7 +134,7 @@ export async function fetchInvoicesPage(
   const data = await printavoGql<{ invoices: PrintavoPage<PrintavoInvoice> }>(
     INVOICES_QUERY,
     {
-      first: 50,
+      first: 10,
       after,
       inProductionAfter: since.toISOString(),
     },
