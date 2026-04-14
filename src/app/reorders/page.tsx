@@ -12,10 +12,10 @@ type Row = {
   customer_name: string | null;
   customer_phone: string | null;
   customer_email: string | null;
-  order_total_cents: number;
-  due_date: string;
-  projected_event_date: string;
-  projected_call_date: string;
+  order_total_cents: number | string;
+  due_date: string | Date;
+  projected_event_date: string | Date;
+  projected_call_date: string | Date;
   reason: string;
   called: boolean;
   outcome: string | null;
@@ -23,12 +23,13 @@ type Row = {
   event_keyword: string | null;
 };
 
-function formatMoney(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+function formatMoney(cents: number | string): string {
+  return `$${(Number(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
-function formatDate(d: string): string {
-  return new Date(d + "T00:00:00Z").toLocaleDateString("en-US", {
+function formatDate(d: string | Date): string {
+  const s = d instanceof Date ? d.toISOString().slice(0, 10) : d;
+  return new Date(s + "T00:00:00Z").toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
