@@ -1,6 +1,7 @@
 import { Shell } from "@/components/Shell";
 import { sql } from "@/lib/db";
 import { markReorderCall } from "./actions";
+import { FilterBar } from "./FilterBar";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +53,20 @@ function prettyReasons(reason: string): string[] {
   });
 }
 
-export default async function ReordersPage() {
+function eventMonth(d: string | Date): number {
+  const s = d instanceof Date ? d.toISOString().slice(0, 10) : d;
+  return new Date(s + "T00:00:00Z").getUTCMonth() + 1; // 1-12
+}
+
+export default async function ReordersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ month?: string; tags?: string }>;
+}) {
+  const { month: monthParam, tags: tagsParam } = await searchParams;
+  const selectedMonth = monthParam ? parseInt(monthParam) : null;
+  const selectedTags = tagsParam ? tagsParam.split(",").filter(Boolean) : [];
+
   const q = sql();
   const rows = (await q`
     select
@@ -78,12 +92,29 @@ export default async function ReordersPage() {
     order by rc.projected_call_date asc, po.order_total_cents desc
   `) as Row[];
 
-  const toCall = rows.filter((r) => !r.called);
-  const done = rows.filter((r) => r.called);
+  // Collect unique months present in the data for the month picker.
+  const availableMonths = Array.from(
+    new Set(rows.map((r) => eventMonth(r.projected_event_date))),
+  ).sort((a, b) => a - b);
+
+  // Apply filters in JS — dataset is small enough that this is fine.
+  const filtered = rows.filter((r) => {
+    if (selectedMonth && eventMonth(r.projected_event_date) !== selectedMonth) {
+      return false;
+    }
+    if (selectedTags.length > 0) {
+      const reasons = r.reason.split(",").map((s) => s.trim());
+      if (!selectedTags.some((t) => reasons.includes(t))) return false;
+    }
+    return true;
+  });
+
+  const toCall = filtered.filter((r) => !r.called);
+  const done = filtered.filter((r) => r.called);
 
   return (
     <Shell active="/reorders">
-      <div className="mb-6 flex items-end justify-between">
+      <div className="mb-4 flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Reorder Call List</h1>
           <p className="text-sm text-[var(--muted)]">
@@ -100,17 +131,27 @@ export default async function ReordersPage() {
         </form>
       </div>
 
-      {toCall.length === 0 ? (
-        <p className="rounded border border-[var(--border)] bg-[var(--surface-solid)] p-6 text-sm text-[var(--muted)]">
-          Nothing to call right now. Run &ldquo;Sync Printavo now&rdquo; if you just added API credentials.
-        </p>
-      ) : (
-        <div className="grid gap-3">
-          {toCall.map((r) => (
-            <ReorderCard key={r.id} row={r} />
-          ))}
-        </div>
-      )}
+      <FilterBar
+        availableMonths={availableMonths}
+        selectedMonth={selectedMonth}
+        selectedTags={selectedTags}
+      />
+
+      <div className="mt-4">
+        {toCall.length === 0 ? (
+          <p className="rounded border border-[var(--border)] bg-[var(--surface-solid)] p-6 text-sm text-[var(--muted)]">
+            {filtered.length === 0 && (selectedMonth || selectedTags.length > 0)
+              ? "No calls match the current filters."
+              : "Nothing to call right now. Run \u201cSync Printavo now\u201d if you just added API credentials."}
+          </p>
+        ) : (
+          <div className="grid gap-3">
+            {toCall.map((r) => (
+              <ReorderCard key={r.id} row={r} />
+            ))}
+          </div>
+        )}
+      </div>
 
       {done.length > 0 ? (
         <details className="mt-8">
