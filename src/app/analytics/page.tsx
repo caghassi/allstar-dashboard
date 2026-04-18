@@ -3,11 +3,39 @@ import { sql } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-type MonthRow = {
-  month: string;
+type PeriodRow = {
+  wtd_revenue: string;
+  wtd_orders: string;
+  wtd_avg: string;
+  wtd_py_revenue: string;
+  wtd_py_orders: string;
+  wtd_py_avg: string;
+  mtd_revenue: string;
+  mtd_orders: string;
+  mtd_avg: string;
+  mtd_py_revenue: string;
+  mtd_py_orders: string;
+  mtd_py_avg: string;
+  ytd_revenue: string;
+  ytd_orders: string;
+  ytd_avg: string;
+  ytd_py_revenue: string;
+  ytd_py_orders: string;
+  ytd_py_avg: string;
+};
+
+type KpiRow = {
+  total_orders: string;
+  total_revenue: string;
+  avg_order_value: string;
+  unique_customers: string;
+};
+
+type MonthCompareRow = {
+  month_num: string;
+  yr: string;
   revenue: string;
   order_count: string;
-  avg_order: string;
 };
 
 type CustomerRow = {
@@ -76,8 +104,44 @@ function pct(n: number, total: number): string {
   return `${((n / total) * 100).toFixed(1)}%`;
 }
 
+function yoyChange(current: number, prior: number): { text: string; color: string } {
+  if (prior === 0 && current === 0) return { text: "—", color: "text-[var(--muted)]" };
+  if (prior === 0) return { text: "+100%", color: "text-green-400" };
+  const change = ((current - prior) / prior) * 100;
+  const sign = change >= 0 ? "+" : "";
+  return {
+    text: `${sign}${change.toFixed(1)}%`,
+    color: change >= 0 ? "text-green-400" : "text-red-400",
+  };
+}
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 export default async function AnalyticsPage() {
   const q = sql();
+
+  const periodRows = (await q`
+    select
+      coalesce(sum(case when due_date >= date_trunc('week', current_date) and due_date <= current_date then order_total_cents end), 0)::text as wtd_revenue,
+      count(case when due_date >= date_trunc('week', current_date) and due_date <= current_date then 1 end)::text as wtd_orders,
+      coalesce(avg(case when due_date >= date_trunc('week', current_date) and due_date <= current_date then order_total_cents end), 0)::text as wtd_avg,
+      coalesce(sum(case when due_date >= date_trunc('week', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as wtd_py_revenue,
+      count(case when due_date >= date_trunc('week', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then 1 end)::text as wtd_py_orders,
+      coalesce(avg(case when due_date >= date_trunc('week', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as wtd_py_avg,
+      coalesce(sum(case when due_date >= date_trunc('month', current_date) and due_date <= current_date then order_total_cents end), 0)::text as mtd_revenue,
+      count(case when due_date >= date_trunc('month', current_date) and due_date <= current_date then 1 end)::text as mtd_orders,
+      coalesce(avg(case when due_date >= date_trunc('month', current_date) and due_date <= current_date then order_total_cents end), 0)::text as mtd_avg,
+      coalesce(sum(case when due_date >= date_trunc('month', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as mtd_py_revenue,
+      count(case when due_date >= date_trunc('month', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then 1 end)::text as mtd_py_orders,
+      coalesce(avg(case when due_date >= date_trunc('month', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as mtd_py_avg,
+      coalesce(sum(case when due_date >= date_trunc('year', current_date) and due_date <= current_date then order_total_cents end), 0)::text as ytd_revenue,
+      count(case when due_date >= date_trunc('year', current_date) and due_date <= current_date then 1 end)::text as ytd_orders,
+      coalesce(avg(case when due_date >= date_trunc('year', current_date) and due_date <= current_date then order_total_cents end), 0)::text as ytd_avg,
+      coalesce(sum(case when due_date >= date_trunc('year', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as ytd_py_revenue,
+      count(case when due_date >= date_trunc('year', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then 1 end)::text as ytd_py_orders,
+      coalesce(avg(case when due_date >= date_trunc('year', current_date) - interval '1 year' and due_date <= current_date - interval '1 year' then order_total_cents end), 0)::text as ytd_py_avg
+    from printavo_orders
+  `) as PeriodRow[];
 
   const kpiRows = (await q`
     select
@@ -86,35 +150,20 @@ export default async function AnalyticsPage() {
       coalesce(avg(order_total_cents), 0)::text as avg_order_value,
       count(distinct customer_id)::text as unique_customers
     from printavo_orders
-  `) as Array<{ total_orders: string; total_revenue: string; avg_order_value: string; unique_customers: string }>;
+  `) as KpiRow[];
 
-  const thisMonthRows = (await q`
-    select coalesce(sum(order_total_cents), 0)::text as revenue,
-           count(*)::text as order_count
-    from printavo_orders
-    where due_date >= date_trunc('month', current_date)
-      and due_date < date_trunc('month', current_date) + interval '1 month'
-  `) as Array<{ revenue: string; order_count: string }>;
-
-  const lastMonthRows = (await q`
-    select coalesce(sum(order_total_cents), 0)::text as revenue,
-           count(*)::text as order_count
-    from printavo_orders
-    where due_date >= date_trunc('month', current_date) - interval '1 month'
-      and due_date < date_trunc('month', current_date)
-  `) as Array<{ revenue: string; order_count: string }>;
-
-  const monthlyRows = (await q`
+  const monthCompareRows = (await q`
     select
-      to_char(due_date, 'YYYY-MM') as month,
+      extract(month from due_date)::text as month_num,
+      extract(year from due_date)::text as yr,
       sum(order_total_cents)::text as revenue,
-      count(*)::text as order_count,
-      avg(order_total_cents)::text as avg_order
+      count(*)::text as order_count
     from printavo_orders
     where due_date is not null
-    group by to_char(due_date, 'YYYY-MM')
-    order by month
-  `) as MonthRow[];
+      and extract(year from due_date) >= extract(year from current_date) - 1
+    group by extract(year from due_date), extract(month from due_date)
+    order by yr, month_num
+  `) as MonthCompareRow[];
 
   const customerRows = (await q`
     select
@@ -193,23 +242,62 @@ export default async function AnalyticsPage() {
     limit 10
   `) as TagRow[];
 
+  const p = periodRows[0];
   const kpi = kpiRows[0];
-  const thisMonth = thisMonthRows[0];
-  const lastMonth = lastMonthRows[0];
+  const totalRevAll = Number(kpi.total_revenue);
 
-  const lastMonthRev = Number(lastMonth.revenue);
-  const thisMonthRev = Number(thisMonth.revenue);
-  const monthChange =
-    lastMonthRev > 0
-      ? ((thisMonthRev - lastMonthRev) / lastMonthRev) * 100
-      : null;
+  const periods = [
+    {
+      label: "Week to Date",
+      abbr: "WTD",
+      revenue: Number(p.wtd_revenue),
+      orders: Number(p.wtd_orders),
+      avg: Number(p.wtd_avg),
+      pyRevenue: Number(p.wtd_py_revenue),
+      pyOrders: Number(p.wtd_py_orders),
+      pyAvg: Number(p.wtd_py_avg),
+    },
+    {
+      label: "Month to Date",
+      abbr: "MTD",
+      revenue: Number(p.mtd_revenue),
+      orders: Number(p.mtd_orders),
+      avg: Number(p.mtd_avg),
+      pyRevenue: Number(p.mtd_py_revenue),
+      pyOrders: Number(p.mtd_py_orders),
+      pyAvg: Number(p.mtd_py_avg),
+    },
+    {
+      label: "Year to Date",
+      abbr: "YTD",
+      revenue: Number(p.ytd_revenue),
+      orders: Number(p.ytd_orders),
+      avg: Number(p.ytd_avg),
+      pyRevenue: Number(p.ytd_py_revenue),
+      pyOrders: Number(p.ytd_py_orders),
+      pyAvg: Number(p.ytd_py_avg),
+    },
+  ];
 
-  const maxMonthlyRevenue = Math.max(
-    ...monthlyRows.map((r) => Number(r.revenue)),
+  // Build month-over-month comparison data
+  const currentYear = new Date().getFullYear();
+  const priorYear = currentYear - 1;
+  const byMonthYear = new Map<string, number>();
+  for (const r of monthCompareRows) {
+    byMonthYear.set(`${r.yr}-${r.month_num}`, Number(r.revenue));
+  }
+  const monthComparison = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    return {
+      month: MONTH_NAMES[i],
+      current: byMonthYear.get(`${currentYear}-${m}`) ?? 0,
+      prior: byMonthYear.get(`${priorYear}-${m}`) ?? 0,
+    };
+  });
+  const maxMonthRev = Math.max(
+    ...monthComparison.map((m) => Math.max(m.current, m.prior)),
     1,
   );
-
-  const totalRevAll = Number(kpi.total_revenue);
 
   const eventData = eventRows.find((r) => r.is_event);
   const nonEventData = eventRows.find((r) => !r.is_event);
@@ -225,80 +313,109 @@ export default async function AnalyticsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Revenue Analytics</h1>
         <p className="text-sm text-[var(--muted)]">
-          All data from Printavo order history (last ~13 months synced).
+          Printavo order history &middot; comparing to same periods last year.
         </p>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiCard label="Total Revenue" value={fmt(kpi.total_revenue)} />
-        <KpiCard
-          label="This Month"
-          value={fmt(thisMonth.revenue)}
-          sub={
-            monthChange !== null
-              ? `${monthChange >= 0 ? "+" : ""}${monthChange.toFixed(1)}% vs last`
-              : `${Number(thisMonth.order_count)} orders`
-          }
-          subColor={
-            monthChange !== null
-              ? monthChange >= 0
-                ? "text-green-400"
-                : "text-red-400"
-              : undefined
-          }
-        />
-        <KpiCard
-          label="Last Month"
-          value={fmt(lastMonth.revenue)}
-          sub={`${Number(lastMonth.order_count)} orders`}
-        />
-        <KpiCard
-          label="Avg Order Value"
-          value={fmt(Math.round(Number(kpi.avg_order_value)))}
-        />
-        <KpiCard label="Total Orders" value={Number(kpi.total_orders).toLocaleString()} />
-        <KpiCard label="Unique Customers" value={Number(kpi.unique_customers).toLocaleString()} />
+      {/* WTD / MTD / YTD Cards */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {periods.map((pd) => {
+          const revChange = yoyChange(pd.revenue, pd.pyRevenue);
+          const ordChange = yoyChange(pd.orders, pd.pyOrders);
+          const avgChange = yoyChange(pd.avg, pd.pyAvg);
+          return (
+            <div
+              key={pd.abbr}
+              className="rounded border border-[var(--border)] bg-[var(--surface-solid)] p-5"
+            >
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-sm font-medium text-[var(--muted)]">{pd.label}</h2>
+                <span className={`text-sm font-semibold ${revChange.color}`}>
+                  {revChange.text} YoY
+                </span>
+              </div>
+              <p className="mt-2 text-3xl font-bold">{fmt(pd.revenue)}</p>
+              <p className="mt-0.5 text-sm text-[var(--muted)]">
+                vs {fmt(pd.pyRevenue)} last year
+              </p>
+
+              <div className="mt-4 grid grid-cols-2 gap-3 border-t border-[var(--border)] pt-3">
+                <div>
+                  <p className="text-xs text-[var(--muted)]">Orders</p>
+                  <p className="text-lg font-semibold">{pd.orders}</p>
+                  <p className={`text-xs ${ordChange.color}`}>
+                    vs {pd.pyOrders} ({ordChange.text})
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-[var(--muted)]">Avg Order</p>
+                  <p className="text-lg font-semibold">{fmt(Math.round(pd.avg))}</p>
+                  <p className={`text-xs ${avgChange.color}`}>
+                    vs {fmt(Math.round(pd.pyAvg))} ({avgChange.text})
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Monthly Revenue Trend */}
-      <Section title="Monthly Revenue" className="mt-8">
-        {monthlyRows.length === 0 ? (
-          <Empty>No order data yet.</Empty>
-        ) : (
-          <div className="space-y-1.5">
-            {monthlyRows.map((r) => {
-              const rev = Number(r.revenue);
-              const widthPct = (rev / maxMonthlyRevenue) * 100;
-              const label = new Date(r.month + "-01T00:00:00Z").toLocaleDateString("en-US", {
-                month: "short",
-                year: "numeric",
-                timeZone: "UTC",
-              });
-              return (
-                <div key={r.month} className="flex items-center gap-3">
-                  <span className="w-20 shrink-0 text-right text-xs text-[var(--muted)]">
-                    {label}
+      {/* Summary KPIs */}
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <SmallKpi label="All-Time Revenue" value={fmt(kpi.total_revenue)} />
+        <SmallKpi label="All-Time Orders" value={Number(kpi.total_orders).toLocaleString()} />
+        <SmallKpi label="Avg Order Value" value={fmt(Math.round(Number(kpi.avg_order_value)))} />
+        <SmallKpi label="Unique Customers" value={Number(kpi.unique_customers).toLocaleString()} />
+      </div>
+
+      {/* Monthly Revenue: This Year vs Last Year */}
+      <Section title={`Monthly Revenue: ${currentYear} vs ${priorYear}`} className="mt-8">
+        <div className="mb-3 flex items-center gap-4 text-xs text-[var(--muted)]">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-3 w-3 rounded bg-[var(--accent)]" />
+            {currentYear}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-3 w-3 rounded bg-[var(--accent)]/30" />
+            {priorYear}
+          </span>
+        </div>
+        <div className="space-y-2">
+          {monthComparison.map((m) => {
+            const curPct = (m.current / maxMonthRev) * 100;
+            const priorPct = (m.prior / maxMonthRev) * 100;
+            const change = yoyChange(m.current, m.prior);
+            return (
+              <div key={m.month}>
+                <div className="mb-0.5 flex items-baseline justify-between">
+                  <span className="w-10 text-xs text-[var(--muted)]">{m.month}</span>
+                  <span className="text-xs text-[var(--muted)]">
+                    {fmt(m.current)} vs {fmt(m.prior)}{" "}
+                    <span className={change.color}>({change.text})</span>
                   </span>
-                  <div className="relative h-7 flex-1 overflow-hidden rounded bg-[var(--border)]">
+                </div>
+                <div className="space-y-0.5">
+                  <div className="relative h-5 overflow-hidden rounded bg-[var(--border)]">
                     <div
                       className="absolute inset-y-0 left-0 rounded bg-[var(--accent)]"
-                      style={{ width: `${widthPct}%` }}
+                      style={{ width: `${curPct}%` }}
                     />
-                    <span className="relative z-10 flex h-full items-center px-2 text-xs font-medium text-black mix-blend-difference">
-                      {fmt(rev)} &middot; {r.order_count} orders &middot; avg {fmt(Math.round(Number(r.avg_order)))}
-                    </span>
+                  </div>
+                  <div className="relative h-3 overflow-hidden rounded bg-[var(--border)]">
+                    <div
+                      className="absolute inset-y-0 left-0 rounded bg-[var(--accent)]/30"
+                      style={{ width: `${priorPct}%` }}
+                    />
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+              </div>
+            );
+          })}
+        </div>
       </Section>
 
       {/* Two-column: Top Customers + Revenue by Status */}
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        {/* Top Customers */}
         <Section title="Top 15 Customers by Revenue">
           {customerRows.length === 0 ? (
             <Empty>No customer data.</Empty>
@@ -334,7 +451,6 @@ export default async function AnalyticsPage() {
           )}
         </Section>
 
-        {/* Revenue by Status */}
         <div className="space-y-6">
           <Section title="Revenue by Status">
             {statusRows.length === 0 ? (
@@ -367,7 +483,6 @@ export default async function AnalyticsPage() {
             )}
           </Section>
 
-          {/* Event vs Non-Event */}
           <Section title="Event vs Regular Orders">
             <div className="flex gap-4">
               <div className="flex-1 rounded border border-[var(--border)] bg-[var(--background)] p-4 text-center">
@@ -391,7 +506,6 @@ export default async function AnalyticsPage() {
             </div>
           </Section>
 
-          {/* Repeat vs One-time */}
           <Section title="Repeat vs One-Time Customers">
             {repeatRows.length === 0 ? (
               <Empty>No data.</Empty>
@@ -419,7 +533,6 @@ export default async function AnalyticsPage() {
         </div>
       </div>
 
-      {/* Tags */}
       {tagRows.length > 0 && (
         <Section title="Top Tags by Revenue" className="mt-8">
           <div className="flex flex-wrap gap-2">
@@ -438,12 +551,10 @@ export default async function AnalyticsPage() {
         </Section>
       )}
 
-      {/* Largest Orders */}
       <Section title="Top 10 Largest Orders" className="mt-8">
         <OrderTable rows={largestRows} />
       </Section>
 
-      {/* Recent Orders */}
       <Section title="Recent Orders" className="mt-8">
         <OrderTable rows={recentRows} />
       </Section>
@@ -451,24 +562,11 @@ export default async function AnalyticsPage() {
   );
 }
 
-function KpiCard({
-  label,
-  value,
-  sub,
-  subColor,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  subColor?: string;
-}) {
+function SmallKpi({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded border border-[var(--border)] bg-[var(--surface-solid)] p-4">
+    <div className="rounded border border-[var(--border)] bg-[var(--surface-solid)] p-3">
       <p className="text-xs text-[var(--muted)]">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-      {sub && (
-        <p className={`mt-0.5 text-xs ${subColor ?? "text-[var(--muted)]"}`}>{sub}</p>
-      )}
+      <p className="mt-0.5 text-xl font-semibold">{value}</p>
     </div>
   );
 }
