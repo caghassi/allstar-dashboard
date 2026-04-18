@@ -120,7 +120,7 @@ async function named<T>(name: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
-export default async function AnalyticsPage() {
+async function loadAnalyticsData() {
   const q = sql();
 
   // Neon's serverless driver serializes JS arrays to a text literal (not
@@ -338,6 +338,44 @@ export default async function AnalyticsPage() {
     left join paid p on p.day = d.day
     order by d.day desc
   `)) as DailyRow[];
+
+  return {
+    kpiRows, thisMonthRows, lastMonthRows, paidSplitRows, monthlyRows,
+    customerRows, statusRows, eventRows, largestRows, recentRows, repeatRows,
+    tagRows, quoteSummaryRows, openQuoteRows, dailyRows,
+  };
+}
+
+export default async function AnalyticsPage() {
+  let data: Awaited<ReturnType<typeof loadAnalyticsData>>;
+  try {
+    data = await loadAnalyticsData();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error ? e.stack : undefined;
+    return (
+      <Shell active="/analytics">
+        <div className="space-y-4">
+          <h1 className="text-2xl font-semibold text-red-400">
+            Analytics failed to load
+          </h1>
+          <p className="text-sm text-[var(--muted)]">
+            A database query failed. The raw error is below so we can fix it.
+          </p>
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-[var(--surface-solid)] p-4 text-xs text-red-300">
+            {msg}
+            {stack ? `\n\n${stack}` : ""}
+          </pre>
+        </div>
+      </Shell>
+    );
+  }
+
+  const {
+    kpiRows, thisMonthRows, lastMonthRows, paidSplitRows, monthlyRows,
+    customerRows, statusRows, eventRows, largestRows, recentRows, repeatRows,
+    tagRows, quoteSummaryRows, openQuoteRows, dailyRows,
+  } = data;
 
   const kpi = kpiRows[0];
   const thisMonth = thisMonthRows[0];
