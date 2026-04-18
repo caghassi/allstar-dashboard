@@ -1,5 +1,6 @@
 import { Shell } from "@/components/Shell";
 import { sql } from "@/lib/db";
+import { PAID_STATUSES, QUOTE_STATUSES } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +57,40 @@ type TagRow = {
   revenue: string;
 };
 
+type QuoteSummaryRow = {
+  quote_count: string;
+  pipeline_revenue: string;
+  avg_quote: string;
+  stale_count: string;
+  stale_revenue: string;
+};
+
+type OpenQuoteRow = {
+  visual_id: string | null;
+  job_name: string | null;
+  customer_name: string | null;
+  order_total_cents: string;
+  created_date: string | null;
+  status: string | null;
+  days_aging: string | null;
+};
+
+type DailyRow = {
+  day: string;
+  quote_count: string;
+  quote_revenue: string;
+  invoice_count: string;
+  invoice_revenue: string;
+  paid_count: string;
+  paid_revenue: string;
+};
+
+type PaidSplitRow = {
+  segment: "Paid" | "Unpaid";
+  order_count: string;
+  revenue: string;
+};
+
 function fmt(cents: number | string): string {
   return `$${(Number(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
@@ -78,6 +113,12 @@ function pct(n: number, total: number): string {
 
 export default async function AnalyticsPage() {
   const q = sql();
+  const quoteStatuses = [...QUOTE_STATUSES];
+  const paidStatuses = [...PAID_STATUSES];
+
+  // KPIs and all revenue/order aggregates below operate on "actual invoices"
+  // only: every status except the quote-pipeline ones. A null status is
+  // treated as an invoice (unknown-but-committed) via coalesce.
 
   const kpiRows = (await q`
     select
@@ -86,13 +127,15 @@ export default async function AnalyticsPage() {
       coalesce(avg(order_total_cents), 0)::text as avg_order_value,
       count(distinct customer_id)::text as unique_customers
     from printavo_orders
+    where coalesce(status, '') <> all(${quoteStatuses})
   `) as Array<{ total_orders: string; total_revenue: string; avg_order_value: string; unique_customers: string }>;
 
   const thisMonthRows = (await q`
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
-    where due_date >= date_trunc('month', current_date)
+    where coalesce(status, '') <> all(${quoteStatuses})
+      and due_date >= date_trunc('month', current_date)
       and due_date < date_trunc('month', current_date) + interval '1 month'
   `) as Array<{ revenue: string; order_count: string }>;
 
@@ -100,9 +143,20 @@ export default async function AnalyticsPage() {
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
-    where due_date >= date_trunc('month', current_date) - interval '1 month'
+    where coalesce(status, '') <> all(${quoteStatuses})
+      and due_date >= date_trunc('month', current_date) - interval '1 month'
       and due_date < date_trunc('month', current_date)
   `) as Array<{ revenue: string; order_count: string }>;
+
+  const paidSplitRows = (await q`
+    select
+      case when status = any(${paidStatuses}) then 'Paid' else 'Unpaid' end as segment,
+      count(*)::text as order_count,
+      coalesce(sum(order_total_cents), 0)::text as revenue
+    from printavo_orders
+    where coalesce(status, '') <> all(${quoteStatuses})
+    group by case when status = any(${paidStatuses}) then 'Paid' else 'Unpaid' end
+  `) as PaidSplitRow[];
 
   const monthlyRows = (await q`
     select
@@ -112,6 +166,7 @@ export default async function AnalyticsPage() {
       avg(order_total_cents)::text as avg_order
     from printavo_orders
     where due_date is not null
+      and coalesce(status, '') <> all(${quoteStatuses})
     group by to_char(due_date, 'YYYY-MM')
     order by month
   `) as MonthRow[];
@@ -126,11 +181,14 @@ export default async function AnalyticsPage() {
       min(due_date)::text as first_order
     from printavo_orders
     where customer_name is not null
+      and coalesce(status, '') <> all(${quoteStatuses})
     group by customer_name, customer_id
     order by sum(order_total_cents) desc
     limit 15
   `) as CustomerRow[];
 
+  // Status breakdown intentionally still includes quotes so the operator can
+  // see the full composition of the pipeline in one table.
   const statusRows = (await q`
     select
       coalesce(status, 'Unknown') as status,
@@ -147,6 +205,7 @@ export default async function AnalyticsPage() {
       count(*)::text as order_count,
       sum(order_total_cents)::text as revenue
     from printavo_orders
+    where coalesce(status, '') <> all(${quoteStatuses})
     group by is_event
   `) as EventRow[];
 
@@ -154,6 +213,7 @@ export default async function AnalyticsPage() {
     select visual_id, job_name, customer_name, order_total_cents::text,
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
+    where coalesce(status, '') <> all(${quoteStatuses})
     order by order_total_cents desc
     limit 10
   `) as OrderRow[];
@@ -163,6 +223,7 @@ export default async function AnalyticsPage() {
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
     where due_date is not null
+      and coalesce(status, '') <> all(${quoteStatuses})
     order by due_date desc
     limit 25
   `) as OrderRow[];
@@ -172,6 +233,7 @@ export default async function AnalyticsPage() {
       select customer_id, count(*) as cnt, sum(order_total_cents) as rev
       from printavo_orders
       where customer_id is not null
+        and coalesce(status, '') <> all(${quoteStatuses})
       group by customer_id
     )
     select
@@ -188,14 +250,88 @@ export default async function AnalyticsPage() {
     select t.tag, count(*)::text as order_count,
            sum(po.order_total_cents)::text as revenue
     from printavo_orders po, jsonb_array_elements_text(po.tags) as t(tag)
+    where coalesce(po.status, '') <> all(${quoteStatuses})
     group by t.tag
     order by sum(po.order_total_cents) desc
     limit 10
   `) as TagRow[];
 
+  // Open quote pipeline — follow-up opportunity. Aging is days since the
+  // quote was created in Printavo.
+  const quoteSummaryRows = (await q`
+    select
+      count(*)::text as quote_count,
+      coalesce(sum(order_total_cents), 0)::text as pipeline_revenue,
+      coalesce(avg(order_total_cents), 0)::text as avg_quote,
+      count(*) filter (
+        where created_date is not null
+          and created_date < current_date - interval '7 days'
+      )::text as stale_count,
+      coalesce(sum(order_total_cents) filter (
+        where created_date is not null
+          and created_date < current_date - interval '7 days'
+      ), 0)::text as stale_revenue
+    from printavo_orders
+    where status = any(${quoteStatuses})
+  `) as QuoteSummaryRow[];
+
+  const openQuoteRows = (await q`
+    select visual_id, job_name, customer_name, order_total_cents::text,
+           created_date::text, status,
+           (current_date - created_date)::text as days_aging
+    from printavo_orders
+    where status = any(${quoteStatuses})
+    order by created_date asc nulls last
+    limit 15
+  `) as OpenQuoteRow[];
+
+  // Last 30 days of activity: what was written (quotes + invoices created)
+  // and what was paid (paid invoices bucketed by due_date).
+  const dailyRows = (await q`
+    with days as (
+      select generate_series(
+        current_date - interval '29 days',
+        current_date,
+        interval '1 day'
+      )::date as day
+    ),
+    written as (
+      select created_date as day,
+             count(*) filter (where status = any(${quoteStatuses})) as quote_count,
+             coalesce(sum(order_total_cents) filter (where status = any(${quoteStatuses})), 0) as quote_revenue,
+             count(*) filter (where coalesce(status, '') <> all(${quoteStatuses})) as invoice_count,
+             coalesce(sum(order_total_cents) filter (where coalesce(status, '') <> all(${quoteStatuses})), 0) as invoice_revenue
+      from printavo_orders
+      where created_date >= current_date - interval '29 days'
+      group by created_date
+    ),
+    paid as (
+      select due_date as day,
+             count(*) as paid_count,
+             coalesce(sum(order_total_cents), 0) as paid_revenue
+      from printavo_orders
+      where status = any(${paidStatuses})
+        and due_date >= current_date - interval '29 days'
+      group by due_date
+    )
+    select
+      to_char(d.day, 'YYYY-MM-DD') as day,
+      coalesce(w.quote_count, 0)::text as quote_count,
+      coalesce(w.quote_revenue, 0)::text as quote_revenue,
+      coalesce(w.invoice_count, 0)::text as invoice_count,
+      coalesce(w.invoice_revenue, 0)::text as invoice_revenue,
+      coalesce(p.paid_count, 0)::text as paid_count,
+      coalesce(p.paid_revenue, 0)::text as paid_revenue
+    from days d
+    left join written w on w.day = d.day
+    left join paid p on p.day = d.day
+    order by d.day desc
+  `) as DailyRow[];
+
   const kpi = kpiRows[0];
   const thisMonth = thisMonthRows[0];
   const lastMonth = lastMonthRows[0];
+  const quoteSummary = quoteSummaryRows[0];
 
   const lastMonthRev = Number(lastMonth.revenue);
   const thisMonthRev = Number(thisMonth.revenue);
@@ -211,6 +347,11 @@ export default async function AnalyticsPage() {
 
   const totalRevAll = Number(kpi.total_revenue);
 
+  const paidData = paidSplitRows.find((r) => r.segment === "Paid");
+  const unpaidData = paidSplitRows.find((r) => r.segment === "Unpaid");
+  const paidRev = Number(paidData?.revenue ?? 0);
+  const unpaidRev = Number(unpaidData?.revenue ?? 0);
+
   const eventData = eventRows.find((r) => r.is_event);
   const nonEventData = eventRows.find((r) => !r.is_event);
   const eventRev = Number(eventData?.revenue ?? 0);
@@ -220,12 +361,24 @@ export default async function AnalyticsPage() {
     ? Number(customerRows[0].total_revenue)
     : 1;
 
+  const maxDailyRevenue = Math.max(
+    ...dailyRows.map((r) =>
+      Math.max(
+        Number(r.quote_revenue) + Number(r.invoice_revenue),
+        Number(r.paid_revenue),
+      ),
+    ),
+    1,
+  );
+
   return (
     <Shell active="/analytics">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Revenue Analytics</h1>
         <p className="text-sm text-[var(--muted)]">
-          All data from Printavo order history (last ~13 months synced).
+          Revenue KPIs below count only actual invoices (paid + unpaid) — quote
+          statuses are excluded and broken out in Quote Follow-up. Last ~13
+          months synced from Printavo.
         </p>
       </div>
 
@@ -260,6 +413,192 @@ export default async function AnalyticsPage() {
         <KpiCard label="Total Orders" value={Number(kpi.total_orders).toLocaleString()} />
         <KpiCard label="Unique Customers" value={Number(kpi.unique_customers).toLocaleString()} />
       </div>
+
+      {/* Paid vs Unpaid invoice split */}
+      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <KpiCard
+          label="Paid Invoices"
+          value={fmt(paidRev)}
+          sub={`${Number(paidData?.order_count ?? 0).toLocaleString()} orders · ${pct(paidRev, paidRev + unpaidRev)}`}
+          subColor="text-green-400"
+        />
+        <KpiCard
+          label="Unpaid Invoices"
+          value={fmt(unpaidRev)}
+          sub={`${Number(unpaidData?.order_count ?? 0).toLocaleString()} orders · ${pct(unpaidRev, paidRev + unpaidRev)}`}
+          subColor="text-yellow-400"
+        />
+      </div>
+
+      {/* Quote Follow-up Opportunity */}
+      <Section title="Quote Follow-up Opportunity" className="mt-8">
+        {Number(quoteSummary.quote_count) === 0 ? (
+          <Empty>No open quotes. Nothing to chase right now.</Empty>
+        ) : (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <KpiCard
+                label="Open Quote Pipeline"
+                value={fmt(quoteSummary.pipeline_revenue)}
+                sub={`${Number(quoteSummary.quote_count).toLocaleString()} quotes`}
+                subColor="text-purple-400"
+              />
+              <KpiCard
+                label="Avg Quote Value"
+                value={fmt(Math.round(Number(quoteSummary.avg_quote)))}
+              />
+              <KpiCard
+                label="Aging >7 days"
+                value={fmt(quoteSummary.stale_revenue)}
+                sub={`${Number(quoteSummary.stale_count).toLocaleString()} quotes need follow-up`}
+                subColor={
+                  Number(quoteSummary.stale_count) > 0
+                    ? "text-red-400"
+                    : "text-[var(--muted)]"
+                }
+              />
+              <KpiCard
+                label="Oldest Open Quote"
+                value={
+                  openQuoteRows[0]?.days_aging
+                    ? `${openQuoteRows[0].days_aging}d`
+                    : "—"
+                }
+                sub={
+                  openQuoteRows[0]?.customer_name
+                    ? openQuoteRows[0].customer_name
+                    : undefined
+                }
+              />
+            </div>
+            <OpenQuoteTable rows={openQuoteRows} />
+          </>
+        )}
+      </Section>
+
+      {/* Daily Activity — last 30 days */}
+      <Section
+        title="Daily Activity — Written vs Paid (last 30 days)"
+        className="mt-8"
+      >
+        {dailyRows.length === 0 ? (
+          <Empty>No activity in the last 30 days.</Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--muted)]">
+                  <th className="pb-2 pr-3 font-normal">Day</th>
+                  <th className="pb-2 pr-3 text-right font-normal">
+                    Quotes Written
+                  </th>
+                  <th className="pb-2 pr-3 text-right font-normal">
+                    Invoices Written
+                  </th>
+                  <th className="pb-2 pr-3 text-right font-normal">Paid</th>
+                  <th className="pb-2 pl-2 font-normal">
+                    <span className="inline-flex items-center gap-2">
+                      <span className="inline-block h-2 w-2 rounded-sm bg-purple-400/70" />
+                      quote
+                      <span className="ml-1 inline-block h-2 w-2 rounded-sm bg-[var(--accent)]" />
+                      invoice
+                      <span className="ml-1 inline-block h-2 w-2 rounded-sm bg-green-500/70" />
+                      paid
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {dailyRows.map((d) => {
+                  const quoteRev = Number(d.quote_revenue);
+                  const invoiceRev = Number(d.invoice_revenue);
+                  const paidRevDay = Number(d.paid_revenue);
+                  const writtenPct =
+                    ((quoteRev + invoiceRev) / maxDailyRevenue) * 100;
+                  const invoicePct = (invoiceRev / maxDailyRevenue) * 100;
+                  const paidPct = (paidRevDay / maxDailyRevenue) * 100;
+                  const hasAny = quoteRev + invoiceRev + paidRevDay > 0;
+                  return (
+                    <tr
+                      key={d.day}
+                      className="border-b border-[var(--border)]/50"
+                    >
+                      <td className="py-1.5 pr-3 text-[var(--muted)] whitespace-nowrap">
+                        {fmtDate(d.day)}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right">
+                        {quoteRev > 0 ? (
+                          <>
+                            <span className="font-medium">{fmt(quoteRev)}</span>
+                            <span className="ml-1 text-xs text-[var(--muted)]">
+                              ({d.quote_count})
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[var(--muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right">
+                        {invoiceRev > 0 ? (
+                          <>
+                            <span className="font-medium">{fmt(invoiceRev)}</span>
+                            <span className="ml-1 text-xs text-[var(--muted)]">
+                              ({d.invoice_count})
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[var(--muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right">
+                        {paidRevDay > 0 ? (
+                          <>
+                            <span className="font-medium text-green-400">
+                              {fmt(paidRevDay)}
+                            </span>
+                            <span className="ml-1 text-xs text-[var(--muted)]">
+                              ({d.paid_count})
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[var(--muted)]">—</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pl-2 w-[40%] min-w-[160px]">
+                        {hasAny ? (
+                          <div className="space-y-0.5">
+                            <div className="relative h-2 overflow-hidden rounded bg-[var(--border)]">
+                              <div
+                                className="absolute inset-y-0 left-0 bg-purple-400/70"
+                                style={{ width: `${writtenPct}%` }}
+                              />
+                              <div
+                                className="absolute inset-y-0 left-0 bg-[var(--accent)]"
+                                style={{ width: `${invoicePct}%` }}
+                              />
+                            </div>
+                            <div className="relative h-2 overflow-hidden rounded bg-[var(--border)]">
+                              <div
+                                className="absolute inset-y-0 left-0 bg-green-500/70"
+                                style={{ width: `${paidPct}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="mt-3 text-xs text-[var(--muted)]">
+              &quot;Written&quot; buckets by created date. &quot;Paid&quot;
+              buckets by due date for orders currently marked{" "}
+              {PAID_STATUSES.join(", ")}.
+            </p>
+          </div>
+        )}
+      </Section>
 
       {/* Monthly Revenue Trend */}
       <Section title="Monthly Revenue" className="mt-8">
@@ -509,6 +848,68 @@ function StatusBadge({ status }: { status: string }) {
     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${cls}`}>
       {status}
     </span>
+  );
+}
+
+function OpenQuoteTable({ rows }: { rows: OpenQuoteRow[] }) {
+  if (rows.length === 0) return <Empty>No open quotes.</Empty>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--muted)]">
+            <th className="pb-2 pr-4 font-normal">Quote</th>
+            <th className="pb-2 pr-4 font-normal">Customer</th>
+            <th className="pb-2 pr-4 font-normal">Job</th>
+            <th className="pb-2 pr-4 text-right font-normal">Value</th>
+            <th className="pb-2 pr-4 font-normal">Created</th>
+            <th className="pb-2 pr-4 text-right font-normal">Aging</th>
+            <th className="pb-2 font-normal">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const aging = r.days_aging ? Number(r.days_aging) : null;
+            const agingClass =
+              aging === null
+                ? "text-[var(--muted)]"
+                : aging >= 14
+                  ? "text-red-400 font-medium"
+                  : aging >= 7
+                    ? "text-yellow-400"
+                    : "text-[var(--muted)]";
+            return (
+              <tr
+                key={`${r.visual_id}-${i}`}
+                className="border-b border-[var(--border)]/50"
+              >
+                <td className="py-1.5 pr-4 text-[var(--muted)]">
+                  {r.visual_id ? `#${r.visual_id}` : "—"}
+                </td>
+                <td className="py-1.5 pr-4 font-medium">
+                  {r.customer_name ?? "Unknown"}
+                </td>
+                <td className="max-w-[200px] truncate py-1.5 pr-4 text-[var(--muted)]">
+                  {r.job_name ?? "—"}
+                </td>
+                <td className="py-1.5 pr-4 text-right font-medium">
+                  {fmt(r.order_total_cents)}
+                </td>
+                <td className="py-1.5 pr-4 text-[var(--muted)]">
+                  {fmtDate(r.created_date)}
+                </td>
+                <td className={`py-1.5 pr-4 text-right ${agingClass}`}>
+                  {aging === null ? "—" : `${aging}d`}
+                </td>
+                <td className="py-1.5">
+                  <StatusBadge status={r.status ?? "Unknown"} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

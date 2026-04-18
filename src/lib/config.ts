@@ -65,3 +65,16 @@ export const PLACES_KEYWORDS = [
   "booster club",
   "athletic association",
 ] as const;
+
+/**
+ * Printavo statuses that indicate the order is a quote (not yet a committed
+ * invoice). These are excluded from revenue/order KPIs so the numbers reflect
+ * actual business, and surfaced separately as follow-up opportunity.
+ */
+export const QUOTE_STATUSES = ["Quote Sent", "Quote Requested"] as const;
+
+/**
+ * Printavo status that indicates the invoice has been paid.
+ * Used to distinguish "paid" vs "unpaid" actual invoices.
+ */
+export const PAID_STATUSES = ["Paid / Picked Up"] as const;
