@@ -111,6 +111,15 @@ function pct(n: number, total: number): string {
   return `${((n / total) * 100).toFixed(1)}%`;
 }
 
+async function named<T>(name: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`[analytics query "${name}"] ${msg}`);
+  }
+}
+
 export default async function AnalyticsPage() {
   const q = sql();
 
@@ -125,7 +134,7 @@ export default async function AnalyticsPage() {
   // only: every status except the quote-pipeline ones. A null status is
   // treated as an invoice (unknown-but-committed) via coalesce.
 
-  const kpiRows = (await q`
+  const kpiRows = (await named("kpi", () => q`
     select
       count(*)::text as total_orders,
       coalesce(sum(order_total_cents), 0)::text as total_revenue,
@@ -133,27 +142,27 @@ export default async function AnalyticsPage() {
       count(distinct customer_id)::text as unique_customers
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
-  `) as Array<{ total_orders: string; total_revenue: string; avg_order_value: string; unique_customers: string }>;
+  `)) as Array<{ total_orders: string; total_revenue: string; avg_order_value: string; unique_customers: string }>;
 
-  const thisMonthRows = (await q`
+  const thisMonthRows = (await named("thisMonth", () => q`
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
       and due_date >= date_trunc('month', current_date)
       and due_date < date_trunc('month', current_date) + interval '1 month'
-  `) as Array<{ revenue: string; order_count: string }>;
+  `)) as Array<{ revenue: string; order_count: string }>;
 
-  const lastMonthRows = (await q`
+  const lastMonthRows = (await named("lastMonth", () => q`
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
       and due_date >= date_trunc('month', current_date) - interval '1 month'
       and due_date < date_trunc('month', current_date)
-  `) as Array<{ revenue: string; order_count: string }>;
+  `)) as Array<{ revenue: string; order_count: string }>;
 
-  const paidSplitRows = (await q`
+  const paidSplitRows = (await named("paidSplit", () => q`
     select
       case when status = ${PAID_A} then 'Paid' else 'Unpaid' end as segment,
       count(*)::text as order_count,
@@ -161,9 +170,9 @@ export default async function AnalyticsPage() {
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by case when status = ${PAID_A} then 'Paid' else 'Unpaid' end
-  `) as PaidSplitRow[];
+  `)) as PaidSplitRow[];
 
-  const monthlyRows = (await q`
+  const monthlyRows = (await named("monthly", () => q`
     select
       to_char(due_date, 'YYYY-MM') as month,
       sum(order_total_cents)::text as revenue,
@@ -174,9 +183,9 @@ export default async function AnalyticsPage() {
       and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by to_char(due_date, 'YYYY-MM')
     order by month
-  `) as MonthRow[];
+  `)) as MonthRow[];
 
-  const customerRows = (await q`
+  const customerRows = (await named("customers", () => q`
     select
       customer_name,
       customer_id,
@@ -190,11 +199,11 @@ export default async function AnalyticsPage() {
     group by customer_name, customer_id
     order by sum(order_total_cents) desc
     limit 15
-  `) as CustomerRow[];
+  `)) as CustomerRow[];
 
   // Status breakdown intentionally still includes quotes so the operator can
   // see the full composition of the pipeline in one table.
-  const statusRows = (await q`
+  const statusRows = (await named("status", () => q`
     select
       coalesce(status, 'Unknown') as status,
       count(*)::text as order_count,
@@ -202,9 +211,9 @@ export default async function AnalyticsPage() {
     from printavo_orders
     group by status
     order by sum(order_total_cents) desc
-  `) as StatusRow[];
+  `)) as StatusRow[];
 
-  const eventRows = (await q`
+  const eventRows = (await named("events", () => q`
     select
       is_event,
       count(*)::text as order_count,
@@ -212,18 +221,18 @@ export default async function AnalyticsPage() {
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by is_event
-  `) as EventRow[];
+  `)) as EventRow[];
 
-  const largestRows = (await q`
+  const largestRows = (await named("largest", () => q`
     select visual_id, job_name, customer_name, order_total_cents::text,
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     order by order_total_cents desc
     limit 10
-  `) as OrderRow[];
+  `)) as OrderRow[];
 
-  const recentRows = (await q`
+  const recentRows = (await named("recent", () => q`
     select visual_id, job_name, customer_name, order_total_cents::text,
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
@@ -231,9 +240,9 @@ export default async function AnalyticsPage() {
       and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     order by due_date desc
     limit 25
-  `) as OrderRow[];
+  `)) as OrderRow[];
 
-  const repeatRows = (await q`
+  const repeatRows = (await named("repeat", () => q`
     with customer_orders as (
       select customer_id, count(*) as cnt, sum(order_total_cents) as rev
       from printavo_orders
@@ -249,9 +258,9 @@ export default async function AnalyticsPage() {
     from customer_orders
     group by case when cnt = 1 then 'One-time' else 'Repeat' end
     order by segment
-  `) as RepeatRow[];
+  `)) as RepeatRow[];
 
-  const tagRows = (await q`
+  const tagRows = (await named("tags", () => q`
     select t.tag, count(*)::text as order_count,
            sum(po.order_total_cents)::text as revenue
     from printavo_orders po, jsonb_array_elements_text(po.tags) as t(tag)
@@ -259,11 +268,11 @@ export default async function AnalyticsPage() {
     group by t.tag
     order by sum(po.order_total_cents) desc
     limit 10
-  `) as TagRow[];
+  `)) as TagRow[];
 
   // Open quote pipeline — follow-up opportunity. Aging is days since the
   // quote was created in Printavo.
-  const quoteSummaryRows = (await q`
+  const quoteSummaryRows = (await named("quoteSummary", () => q`
     select
       count(*)::text as quote_count,
       coalesce(sum(order_total_cents), 0)::text as pipeline_revenue,
@@ -278,9 +287,9 @@ export default async function AnalyticsPage() {
       ), 0)::text as stale_revenue
     from printavo_orders
     where status in (${QUOTE_A}, ${QUOTE_B})
-  `) as QuoteSummaryRow[];
+  `)) as QuoteSummaryRow[];
 
-  const openQuoteRows = (await q`
+  const openQuoteRows = (await named("openQuotes", () => q`
     select visual_id, job_name, customer_name, order_total_cents::text,
            created_date::text, status,
            (current_date - created_date)::text as days_aging
@@ -288,17 +297,14 @@ export default async function AnalyticsPage() {
     where status in (${QUOTE_A}, ${QUOTE_B})
     order by created_date asc nulls last
     limit 15
-  `) as OpenQuoteRow[];
+  `)) as OpenQuoteRow[];
 
   // Last 30 days of activity: what was written (quotes + invoices created)
   // and what was paid (paid invoices bucketed by due_date).
-  const dailyRows = (await q`
+  const dailyRows = (await named("daily", () => q`
     with days as (
-      select generate_series(
-        current_date - interval '29 days',
-        current_date,
-        interval '1 day'
-      )::date as day
+      select (current_date - n) as day
+      from generate_series(0, 29) as n
     ),
     written as (
       select created_date as day,
@@ -307,7 +313,7 @@ export default async function AnalyticsPage() {
              count(*) filter (where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))) as invoice_count,
              coalesce(sum(order_total_cents) filter (where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))), 0) as invoice_revenue
       from printavo_orders
-      where created_date >= current_date - interval '29 days'
+      where created_date >= current_date - 29
       group by created_date
     ),
     paid as (
@@ -316,7 +322,7 @@ export default async function AnalyticsPage() {
              coalesce(sum(order_total_cents), 0) as paid_revenue
       from printavo_orders
       where status = ${PAID_A}
-        and due_date >= current_date - interval '29 days'
+        and due_date >= current_date - 29
       group by due_date
     )
     select
@@ -331,7 +337,7 @@ export default async function AnalyticsPage() {
     left join written w on w.day = d.day
     left join paid p on p.day = d.day
     order by d.day desc
-  `) as DailyRow[];
+  `)) as DailyRow[];
 
   const kpi = kpiRows[0];
   const thisMonth = thisMonthRows[0];
