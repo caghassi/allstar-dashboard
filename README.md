@@ -15,7 +15,7 @@ Internal dashboard for All Star Turlock. Three views:
 
 - Next.js 16 (App Router, Turbopack) + React 19
 - TypeScript + Tailwind v4
-- Neon Postgres (serverless HTTP driver)
+- Supabase Postgres via the `postgres` (postgres-js) driver
 - Deploys to Vercel; Vercel Cron drives the sync jobs.
 
 ## One-time setup
@@ -25,9 +25,11 @@ Internal dashboard for All Star Turlock. Three views:
    npm install
    ```
 
-2. **Provision a database.** Create a Neon project and copy the pooled
-   connection URL. Save it as `DATABASE_URL` in `.env.local` (see
-   `.env.example`).
+2. **Provision a database.** Create a Supabase project at
+   https://supabase.com/dashboard, then grab Project Settings → Database →
+   Connection string → **Transaction pooler** (port 6543). Save it as
+   `DATABASE_URL` in `.env.local` (see `.env.example`). The driver is
+   configured with `prepare: false`, which the transaction pooler requires.
 
 3. **Apply the schema**
    ```bash
@@ -112,7 +114,7 @@ dashboard/
     components/Shell.tsx
     lib/
       auth.ts                 # Session cookie + password check
-      db.ts                   # Neon SQL tagged template
+      db.ts                   # postgres-js tagged template (Supabase)
       config.ts               # Geo, keywords, thresholds
       printavo.ts             # Printavo GraphQL client
       reorder-sync.ts         # Pulls invoices + rebuilds reorder queue

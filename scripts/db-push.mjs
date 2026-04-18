@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Apply src/db/schema.sql to the Neon database pointed to by DATABASE_URL.
+// Apply src/db/schema.sql to the Postgres database pointed to by DATABASE_URL.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { Pool } from "@neondatabase/serverless";
+import postgres from "postgres";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(here, "..", "src", "db", "schema.sql");
@@ -14,7 +14,7 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const sql = postgres(process.env.DATABASE_URL, { prepare: false, max: 1 });
 const schema = readFileSync(schemaPath, "utf8");
 
 // Split on ';' at end of line. Keep SQL with inline/leading comments intact
@@ -28,7 +28,7 @@ const statements = schema
 
 for (const stmt of statements) {
   try {
-    await pool.query(stmt);
+    await sql.unsafe(stmt);
     const firstSql =
       stmt
         .split("\n")
@@ -37,10 +37,10 @@ for (const stmt of statements) {
   } catch (err) {
     console.error("FAILED:", stmt.split("\n")[0]);
     console.error(err.message);
-    await pool.end();
+    await sql.end();
     process.exit(1);
   }
 }
 
-await pool.end();
+await sql.end();
 console.log("\nSchema applied.");
