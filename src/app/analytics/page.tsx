@@ -169,7 +169,7 @@ async function loadAnalyticsData() {
       coalesce(sum(order_total_cents), 0)::text as revenue
     from printavo_orders
     where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
-    group by case when status = ${PAID_A} then 'Paid' else 'Unpaid' end
+    group by 1
   `)) as PaidSplitRow[];
 
   const monthlyRows = (await named("monthly", () => q`
