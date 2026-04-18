@@ -113,8 +113,13 @@ function pct(n: number, total: number): string {
 
 export default async function AnalyticsPage() {
   const q = sql();
-  const quoteStatuses = [...QUOTE_STATUSES];
-  const paidStatuses = [...PAID_STATUSES];
+
+  // Neon's serverless driver serializes JS arrays to a text literal (not
+  // text[]), so `= any($1)` would need an explicit cast. To keep things
+  // simple and guaranteed-portable, we destructure the known statuses and
+  // pass each one as an individual positional parameter.
+  const [QUOTE_A, QUOTE_B] = QUOTE_STATUSES;
+  const [PAID_A] = PAID_STATUSES;
 
   // KPIs and all revenue/order aggregates below operate on "actual invoices"
   // only: every status except the quote-pipeline ones. A null status is
@@ -127,14 +132,14 @@ export default async function AnalyticsPage() {
       coalesce(avg(order_total_cents), 0)::text as avg_order_value,
       count(distinct customer_id)::text as unique_customers
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
   `) as Array<{ total_orders: string; total_revenue: string; avg_order_value: string; unique_customers: string }>;
 
   const thisMonthRows = (await q`
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
       and due_date >= date_trunc('month', current_date)
       and due_date < date_trunc('month', current_date) + interval '1 month'
   `) as Array<{ revenue: string; order_count: string }>;
@@ -143,19 +148,19 @@ export default async function AnalyticsPage() {
     select coalesce(sum(order_total_cents), 0)::text as revenue,
            count(*)::text as order_count
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
       and due_date >= date_trunc('month', current_date) - interval '1 month'
       and due_date < date_trunc('month', current_date)
   `) as Array<{ revenue: string; order_count: string }>;
 
   const paidSplitRows = (await q`
     select
-      case when status = any(${paidStatuses}) then 'Paid' else 'Unpaid' end as segment,
+      case when status = ${PAID_A} then 'Paid' else 'Unpaid' end as segment,
       count(*)::text as order_count,
       coalesce(sum(order_total_cents), 0)::text as revenue
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
-    group by case when status = any(${paidStatuses}) then 'Paid' else 'Unpaid' end
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
+    group by case when status = ${PAID_A} then 'Paid' else 'Unpaid' end
   `) as PaidSplitRow[];
 
   const monthlyRows = (await q`
@@ -166,7 +171,7 @@ export default async function AnalyticsPage() {
       avg(order_total_cents)::text as avg_order
     from printavo_orders
     where due_date is not null
-      and coalesce(status, '') <> all(${quoteStatuses})
+      and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by to_char(due_date, 'YYYY-MM')
     order by month
   `) as MonthRow[];
@@ -181,7 +186,7 @@ export default async function AnalyticsPage() {
       min(due_date)::text as first_order
     from printavo_orders
     where customer_name is not null
-      and coalesce(status, '') <> all(${quoteStatuses})
+      and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by customer_name, customer_id
     order by sum(order_total_cents) desc
     limit 15
@@ -205,7 +210,7 @@ export default async function AnalyticsPage() {
       count(*)::text as order_count,
       sum(order_total_cents)::text as revenue
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     group by is_event
   `) as EventRow[];
 
@@ -213,7 +218,7 @@ export default async function AnalyticsPage() {
     select visual_id, job_name, customer_name, order_total_cents::text,
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
-    where coalesce(status, '') <> all(${quoteStatuses})
+    where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     order by order_total_cents desc
     limit 10
   `) as OrderRow[];
@@ -223,7 +228,7 @@ export default async function AnalyticsPage() {
            due_date::text, created_date::text, status, is_event, event_keyword
     from printavo_orders
     where due_date is not null
-      and coalesce(status, '') <> all(${quoteStatuses})
+      and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
     order by due_date desc
     limit 25
   `) as OrderRow[];
@@ -233,7 +238,7 @@ export default async function AnalyticsPage() {
       select customer_id, count(*) as cnt, sum(order_total_cents) as rev
       from printavo_orders
       where customer_id is not null
-        and coalesce(status, '') <> all(${quoteStatuses})
+        and (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))
       group by customer_id
     )
     select
@@ -250,7 +255,7 @@ export default async function AnalyticsPage() {
     select t.tag, count(*)::text as order_count,
            sum(po.order_total_cents)::text as revenue
     from printavo_orders po, jsonb_array_elements_text(po.tags) as t(tag)
-    where coalesce(po.status, '') <> all(${quoteStatuses})
+    where (po.status is null or po.status not in (${QUOTE_A}, ${QUOTE_B}))
     group by t.tag
     order by sum(po.order_total_cents) desc
     limit 10
@@ -272,7 +277,7 @@ export default async function AnalyticsPage() {
           and created_date < current_date - interval '7 days'
       ), 0)::text as stale_revenue
     from printavo_orders
-    where status = any(${quoteStatuses})
+    where status in (${QUOTE_A}, ${QUOTE_B})
   `) as QuoteSummaryRow[];
 
   const openQuoteRows = (await q`
@@ -280,7 +285,7 @@ export default async function AnalyticsPage() {
            created_date::text, status,
            (current_date - created_date)::text as days_aging
     from printavo_orders
-    where status = any(${quoteStatuses})
+    where status in (${QUOTE_A}, ${QUOTE_B})
     order by created_date asc nulls last
     limit 15
   `) as OpenQuoteRow[];
@@ -297,10 +302,10 @@ export default async function AnalyticsPage() {
     ),
     written as (
       select created_date as day,
-             count(*) filter (where status = any(${quoteStatuses})) as quote_count,
-             coalesce(sum(order_total_cents) filter (where status = any(${quoteStatuses})), 0) as quote_revenue,
-             count(*) filter (where coalesce(status, '') <> all(${quoteStatuses})) as invoice_count,
-             coalesce(sum(order_total_cents) filter (where coalesce(status, '') <> all(${quoteStatuses})), 0) as invoice_revenue
+             count(*) filter (where status in (${QUOTE_A}, ${QUOTE_B})) as quote_count,
+             coalesce(sum(order_total_cents) filter (where status in (${QUOTE_A}, ${QUOTE_B})), 0) as quote_revenue,
+             count(*) filter (where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))) as invoice_count,
+             coalesce(sum(order_total_cents) filter (where (status is null or status not in (${QUOTE_A}, ${QUOTE_B}))), 0) as invoice_revenue
       from printavo_orders
       where created_date >= current_date - interval '29 days'
       group by created_date
@@ -310,7 +315,7 @@ export default async function AnalyticsPage() {
              count(*) as paid_count,
              coalesce(sum(order_total_cents), 0) as paid_revenue
       from printavo_orders
-      where status = any(${paidStatuses})
+      where status = ${PAID_A}
         and due_date >= current_date - interval '29 days'
       group by due_date
     )
