@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:push": "node --env-file=.env.local ./scripts/db-push.mjs"
+    "db:push": "node --env-file=.env.local ./scripts/db-push.mjs",
+    "apparel-aov": "node --env-file=.env.local ./scripts/apparel-aov.mjs"
   },
   "dependencies": {
     "cheerio": "^1.0.0",
